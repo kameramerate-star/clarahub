@@ -1,0 +1,2656 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local Stats = game:GetService("Stats")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+
+local lastOverlayUpdate = 0
+local overlayUpdateInterval = 0.1
+
+
+local predictionHistory = {}
+local frameTimeHistory = {}
+local lastPredictionUpdate = 0
+local PREDICTION_UPDATE_RATE = 0.016
+
+local DEFAULT_SETTINGS = {
+    ToggleKey = "K",
+    FOV = 80,
+    Smoothness = 1,
+    MaxDistance = 5000,
+    HoldMode = true,
+    WallCheck = false,
+    TeamCheck = true,
+    GUIOpenKey = "P",
+    Priority = "Closest",
+    PingToggleKey = "F1",  
+    InfiniteJumpKey = "J",
+	RejoinKey = "F10",
+	AutoPrediction = true,
+    Prediction = 0
+}
+
+local TOGGLE_KEY_ESP = Enum.KeyCode.U
+local TOGGLE_KEY_OVERLAY = Enum.KeyCode.RightShift
+local SHOW_THROUGH_WALLS = true
+local BILLBOARD_OFFSET = Vector3.new(0, 2.7, 0)
+local OVERLAY_POSITION = UDim2.new(0, 20, 0.05, 0)
+local FONT = Enum.Font.SourceSansBold
+local NAME_TEXT_SIZE = 15
+local BAR_WIDTH = 100
+local DEBOUNCE_KEY = 0.18
+
+local settings = {}
+local aimbotEnabled = false
+local currentTarget = nil
+local fovCircle = nil
+local mainGUI = nil
+local autoPredictionEnabled = false
+
+local espVisible = true
+local overlayVisible = true
+local debounce = false
+local tracked = {}
+local overlayGui
+local overlayList = {}
+
+local optimizationEnabled = false
+local removedCounts = {
+    smokeeffect = 0,
+    enemyclone = 0,
+    npc = 0
+}
+local disabledCount = 0
+
+local particlesRemovedCount = 0
+local particlesConnection = nil
+
+local ToDisable = {
+    Textures = true,
+    VisualEffects = true,
+    Parts = true,
+    Particles = true,
+    Sky = true
+}
+
+local ToEnable = {
+    FullBright = false
+}
+
+local PartClasses = {
+    Part = true,
+    UnionOperation = true,
+    WedgePart = true,
+    CornerWedgePart = true,
+    TrussPart = true,
+    MeshPart = true
+}
+
+local ParticleClasses = {
+    ParticleEmitter = true,
+    Smoke = true,
+    Explosion = true,
+    Sparkles = true,
+    Fire = true,
+    Beam = true,
+    Trail = true
+}
+
+local VisualEffectClasses = {
+    BloomEffect = true,
+    BlurEffect = true,
+    DepthOfFieldEffect = true,
+    SunRaysEffect = true,
+    ColorCorrectionEffect = true
+}
+
+
+local pingGui = nil
+local pingConnection = nil
+local pingVisible = true
+
+
+local InfiniteJumpEnabled = false
+
+
+local function GetPing()
+    local success, result = pcall(function()
+        local stats = game:GetService("Stats")
+        local perfStats = stats and stats:FindFirstChild("PerformanceStats")
+        if perfStats then
+            local pingStat = perfStats:FindFirstChild("Ping")
+            if pingStat then
+                return pingStat:GetValue()
+            end
+        end
+        return 0
+    end)
+    
+    return success and math.floor(result) or 0
+end
+
+local function CreatePingDisplay()
+    if pingGui and pingGui.Parent then
+        pingGui:Destroy()
+    end
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "PingDisplay"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 80, 0, 30)
+    frame.Position = UDim2.new(1, -250, 0, 1009)
+    frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    frame.BackgroundTransparency = 0.1
+    frame.BorderSizePixel = 0
+    frame.Parent = screenGui
+
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = frame
+    
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(100, 0, 255)
+    stroke.Thickness = 1
+    stroke.Parent = frame
+    
+    local pingText = Instance.new("TextLabel")
+    pingText.Size = UDim2.new(1, 0, 1, 0)
+    pingText.Position = UDim2.new(0, 0, 0, 0)
+    pingText.BackgroundTransparency = 1
+    pingText.Text = "0ms"
+    pingText.TextColor3 = Color3.fromRGB(220, 220, 220)
+    pingText.Font = Enum.Font.Gotham
+    pingText.TextSize = 12
+    pingText.TextXAlignment = Enum.TextXAlignment.Center
+    pingText.TextYAlignment = Enum.TextYAlignment.Center
+    pingText.Parent = frame
+    
+
+    pingGui = screenGui
+    
+    if pingConnection then
+        pingConnection:Disconnect()
+    end
+    
+    pingConnection = RunService.Heartbeat:Connect(function()
+        local currentPing = GetPing()
+        local pingColor = Color3.fromRGB(80, 255, 80)
+        
+        if currentPing > 100 then
+            pingColor = Color3.fromRGB(255, 255, 0)
+        elseif currentPing > 200 then
+            pingColor = Color3.fromRGB(255, 80, 80)
+        end
+        
+        pingText.Text = currentPing .. "ms"
+        pingText.TextColor3 = pingColor
+    end)
+end
+
+local function RemovePingDisplay()
+    if pingConnection then
+        pingConnection:Disconnect()
+        pingConnection = nil
+    end
+    if pingGui then
+        pingGui:Destroy()
+        pingGui = nil
+    end
+end
+
+local function TogglePingDisplay()
+    pingVisible = not pingVisible
+    
+    if pingVisible then
+        CreatePingDisplay()
+        print("Ping display: ON")
+    else
+        RemovePingDisplay()
+        print("Ping display: OFF")
+    end
+end
+
+
+local function toggleInfiniteJump()
+    InfiniteJumpEnabled = not InfiniteJumpEnabled
+    if InfiniteJumpEnabled then
+        print("Infinite Jump: ATIVADO")
+    else
+        print("Infinite Jump: DESATIVADO")
+    end
+end
+
+
+game:GetService("UserInputService").JumpRequest:connect(function()
+    if InfiniteJumpEnabled and LocalPlayer.Character then
+        local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid:ChangeState("Jumping")
+        end
+    end
+end)
+
+
+local function SaveSettings()
+    local success = pcall(function()
+        local saveData = {}
+        for key, value in pairs(settings) do
+            saveData[key] = value
+        end
+        writefile("AimbotSettings.json", game:GetService("HttpService"):JSONEncode(saveData))
+    end)
+end
+
+local function LoadSettings()
+    local success, result = pcall(function()
+        if isfile("AimbotSettings.json") then
+            local data = readfile("AimbotSettings.json")
+            local loaded = game:GetService("HttpService"):JSONDecode(data)
+            for key, value in pairs(loaded) do
+                settings[key] = value
+            end
+            
+            -- Configurações padrão para novas opções
+            if settings.PingToggleKey == nil then
+                settings.PingToggleKey = DEFAULT_SETTINGS.PingToggleKey
+            end
+            if settings.InfiniteJumpKey == nil then
+                settings.InfiniteJumpKey = DEFAULT_SETTINGS.InfiniteJumpKey
+            end
+            if settings.RejoinKey == nil then
+                settings.RejoinKey = DEFAULT_SETTINGS.RejoinKey
+            end
+            if settings.AutoPrediction == nil then
+                settings.AutoPrediction = DEFAULT_SETTINGS.AutoPrediction
+            end
+            if settings.Prediction == nil then
+                settings.Prediction = 0.15  -- Valor padrão de predição
+            end
+            
+            -- Aplicar configurações carregadas
+            autoPredictionEnabled = settings.AutoPrediction
+            
+        else
+            for key, value in pairs(DEFAULT_SETTINGS) do
+                settings[key] = value
+            end
+            settings.Prediction = 0.15  -- Valor padrão de predição
+            autoPredictionEnabled = settings.AutoPrediction
+            SaveSettings()
+        end
+    end)
+    
+    if not success then
+        for key, value in pairs(DEFAULT_SETTINGS) do
+            settings[key] = value
+        end
+        settings.Prediction = 0.15
+        autoPredictionEnabled = settings.AutoPrediction
+        SaveSettings()
+    end
+end
+
+local function makeMovable(frame)
+    local dragToggle = false
+    local dragStart = nil
+    local startPos = nil
+    
+    
+    local moveConnection, endConnection
+
+    frame.Active = true
+    frame.Selectable = true
+    frame.Draggable = false 
+
+    local function updateDrag(input)
+        if not dragToggle or not dragStart or not startPos then return end
+        
+        local delta = input.Position - dragStart
+        local newX = startPos.X.Offset + delta.X
+        local newY = startPos.Y.Offset + delta.Y
+        
+  
+        local viewportSize = workspace.CurrentCamera.ViewportSize
+        local frameSize = frame.AbsoluteSize
+        
+        newX = math.clamp(newX, 0, viewportSize.X - frameSize.X)
+        newY = math.clamp(newY, 0, viewportSize.Y - frameSize.Y)
+        
+        frame.Position = UDim2.new(0, newX, 0, newY)
+    end
+
+    local function startDrag(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragToggle = true
+            dragStart = input.Position
+            startPos = frame.Position
+            frame.ZIndex = 1000
+            
+            if moveConnection then moveConnection:Disconnect() end
+            moveConnection = UserInputService.InputChanged:Connect(function(moveInput)
+                if moveInput.UserInputType == Enum.UserInputType.MouseMovement then
+                    updateDrag(moveInput)
+                end
+            end)
+            
+            
+            if endConnection then endConnection:Disconnect() end
+            endConnection = UserInputService.InputEnded:Connect(function(endInput)
+                if endInput.UserInputType == Enum.UserInputType.MouseButton1 then
+                    dragToggle = false
+                    frame.ZIndex = 1
+                    
+                    if moveConnection then
+                        moveConnection:Disconnect()
+                        moveConnection = nil
+                    end
+                    if endConnection then
+                        endConnection:Disconnect()
+                        endConnection = nil
+                    end
+                end
+            end)
+        end
+    end
+
+    local function cleanup()
+        dragToggle = false
+        if moveConnection then
+            moveConnection:Disconnect()
+            moveConnection = nil
+        end
+        if endConnection then
+            endConnection:Disconnect()
+            endConnection = nil
+        end
+    end
+
+    
+    local dragHandle = Instance.new("Frame")
+    dragHandle.Name = "DragHandle"
+    dragHandle.Size = UDim2.new(1, 0, 1, 0)
+    dragHandle.Position = UDim2.new(0, 0, 0, 0)
+    dragHandle.BackgroundTransparency = 1
+    dragHandle.BorderSizePixel = 0
+    dragHandle.ZIndex = frame.ZIndex + 1
+    dragHandle.Parent = frame
+
+   
+    dragHandle.InputBegan:Connect(startDrag)
+    frame.InputBegan:Connect(startDrag) 
+    
+    
+    frame.AncestryChanged:Connect(function()
+        if not frame.Parent then
+            cleanup()
+        end
+    end)
+end
+
+
+
+
+local function processObject(obj, isNew)
+    if not optimizationEnabled then return false end
+    
+    local name = obj.Name:lower()
+    local className = obj.ClassName
+    
+    if obj:IsA("ParticleEmitter") and obj.Name == "smokeeffect" then
+        removedCounts.smokeeffect += 1
+        if isNew then task.wait() end
+        pcall(obj.Destroy, obj)
+        return true
+    end
+
+    if obj:IsA("Model") and obj.Name == "enemyclone" then
+        local parent = obj.Parent
+        if parent and parent.Name == "ClientEffects" then
+            removedCounts.enemyclone += 1
+            if isNew then task.wait() end
+            pcall(obj.Destroy, obj)
+            return true
+        end
+    end
+
+    if obj:IsA("Model") then
+        if string.find(name, "clone") or 
+           string.find(name, "flicker") or 
+           string.find(name, "statz") or
+           string.find(name, "npc") then
+            
+            removedCounts.npc += 1
+            if isNew then task.wait() end
+            pcall(obj.Destroy, obj)
+            return true
+        end
+    end
+    
+    if ToDisable.Parts and PartClasses[className] then
+        pcall(function()
+            obj.Material = Enum.Material.SmoothPlastic
+            disabledCount += 1
+        end)
+        
+    elseif ToDisable.Particles and ParticleClasses[className] then
+        pcall(function()
+            obj.Enabled = false
+            disabledCount += 1
+        end)
+        
+    elseif ToDisable.VisualEffects and VisualEffectClasses[className] then
+        pcall(function()
+            obj.Enabled = false
+            disabledCount += 1
+        end)
+        
+    elseif ToDisable.Textures and className == "Texture" then
+        pcall(function()
+            obj.Texture = ""
+            disabledCount += 1
+        end)
+        
+    elseif ToDisable.Sky and className == "Sky" then
+        pcall(function()
+            obj.Parent = nil
+            disabledCount += 1
+        end)
+    end
+    
+    return false
+end
+
+local function startOptimization()
+    if optimizationEnabled then return end
+    
+    optimizationEnabled = true
+    local startTime = os.clock()
+    local descendants = Workspace:GetDescendants()
+    local total = #descendants
+    
+    for i = 1, total do
+        processObject(descendants[i], false)
+        
+        if i % 500 == 0 then
+            task.wait()
+        end
+    end
+    
+    local endTime = os.clock()
+    
+    print("SISTEMA DE OTIMIZACAO ATIVADO")
+    print("Estatisticas de remocao:")
+    print("   smokeeffect: " .. removedCounts.smokeeffect)
+    print("   enemyclone: " .. removedCounts.enemyclone) 
+    print("   NPCs: " .. removedCounts.npc)
+    print("Estatisticas de otimizacao:")
+    print("   Assets desabilitados: " .. disabledCount)
+    print("Tempo total: " .. string.format("%.2f", endTime - startTime) .. " segundos")
+    print("Objetos processados: " .. total)
+    
+    if ToEnable.FullBright then
+        task.spawn(function()
+            local Lighting = game:GetService("Lighting")
+            
+            local lightingProperties = {
+                FogColor = Color3.fromRGB(255, 255, 255),
+                FogEnd = math.huge,
+                FogStart = math.huge,
+                Ambient = Color3.fromRGB(255, 255, 255),
+                Brightness = 5,
+                ColorShift_Bottom = Color3.fromRGB(255, 255, 255),
+                ColorShift_Top = Color3.fromRGB(255, 255, 255),
+                OutdoorAmbient = Color3.fromRGB(255, 255, 255),
+                Outlines = false
+            }
+            
+            for property, value in pairs(lightingProperties) do
+                pcall(function()
+                    Lighting[property] = value
+                end)
+            end
+            
+            print("FullBright ativado")
+        end)
+    end
+end
+
+local function stopOptimization()
+    optimizationEnabled = false
+    print("Sistema de otimizacao desativado")
+end
+
+local function toggleOptimization()
+    if optimizationEnabled then
+        stopOptimization()
+    else
+        startOptimization()
+    end
+    return optimizationEnabled
+end
+
+local optimizationConnection
+local function setupOptimizationMonitor()
+    if optimizationConnection then
+        optimizationConnection:Disconnect()
+    end
+    
+    optimizationConnection = Workspace.DescendantAdded:Connect(function(descendant)
+        processObject(descendant, true)
+    end)
+end
+
+local function removeParticleEmitters()
+    local descendants = workspace:GetDescendants()
+    for _, obj in pairs(descendants) do
+        if obj:IsA("ParticleEmitter") then
+            pcall(function()
+                obj:Destroy()
+                particlesRemovedCount += 1
+            end)
+        end
+    end
+end
+
+local function setupParticlesMonitor()
+    if particlesConnection then
+        particlesConnection:Disconnect()
+    end
+    
+    particlesConnection = workspace.DescendantAdded:Connect(function(descendant)
+        if descendant:IsA("ParticleEmitter") then
+            wait()
+            pcall(function()
+                descendant:Destroy()
+                particlesRemovedCount += 1
+            end)
+        end
+    end)
+end
+
+local function startRemoveParticles()
+    particlesRemovedCount = 0
+    removeParticleEmitters()
+    setupParticlesMonitor()
+end
+
+local function executeRejoin()
+    local TeleportService = game:GetService("TeleportService")
+    
+    print("Executando rejoin...")
+    
+    local success, result = pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end)
+    
+    if not success then
+        warn("Rejoin falhou: " .. tostring(result))
+        
+        -- Tenta método alternativo
+        local success2 = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+        end)
+        
+        if not success2 then
+            warn("Método alternativo também falhou")
+        end
+    end
+end
+
+
+local function toggleEspVisibility()
+    espVisible = not espVisible
+    print("ESP: " .. (espVisible and "ON" or "OFF"))
+    
+    for _, t in pairs(tracked) do
+        if t and t.info and t.info.billboard then
+            t.info.billboard.Enabled = espVisible
+        end
+    end
+end
+
+local function refreshAllESP()
+    for character, t in pairs(tracked) do
+        if t and t.info and t.info.billboard then
+            t.info.billboard.Enabled = espVisible
+        end
+    end
+end
+
+local function createBillboardForCharacter(character, player)
+    if player == Players.LocalPlayer then return nil end
+    if not character or not character.Parent then return nil end
+    
+    local head = character:FindFirstChild("Head") or character:FindFirstChild("UpperTorso") or character.PrimaryPart
+    if not head then return nil end
+
+    local existing = head:FindFirstChild("ESP_Billboard")
+    if existing then existing:Destroy() end
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "ESP_Billboard"
+    billboard.Adornee = head
+    billboard.AlwaysOnTop = SHOW_THROUGH_WALLS
+    billboard.Size = UDim2.new(0, BAR_WIDTH, 0, 52)
+    billboard.StudsOffset = BILLBOARD_OFFSET
+    billboard.MaxDistance = 10000000
+    billboard.Enabled = espVisible
+    billboard.Parent = head
+    
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 1, 0)
+    frame.BackgroundTransparency = 1
+    frame.Parent = billboard
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name = "ESPName"
+    nameLabel.Size = UDim2.new(1, -8, 0, 20)
+    nameLabel.Position = UDim2.new(0, 4, 0, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = tostring(player and player.Name or "NPC")
+    nameLabel.TextColor3 = Color3.fromRGB(220, 180, 255)
+    nameLabel.Font = FONT
+    nameLabel.TextSize = NAME_TEXT_SIZE
+    nameLabel.TextStrokeTransparency = -1
+    nameLabel.TextScaled = false
+    nameLabel.Parent = frame
+
+    local barBack = Instance.new("Frame")
+    barBack.Name = "HealthBack"
+    barBack.Size = UDim2.new(1, -8, 0, 3)
+    barBack.Position = UDim2.new(0, 4, 0, 20)
+    barBack.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    barBack.BorderSizePixel = 0
+    barBack.Parent = frame
+
+    local cornerBack = Instance.new("UICorner")
+    cornerBack.CornerRadius = UDim.new(0, 8)
+    cornerBack.Parent = barBack
+
+    local healthFill = Instance.new("Frame")
+    healthFill.Name = "HealthFill"
+    healthFill.Size = UDim2.new(1, 0, 1, 0)
+    healthFill.Position = UDim2.new(0, 0, 0, 0)
+    healthFill.BorderSizePixel = 0
+    healthFill.BackgroundColor3 = Color3.fromRGB(40, 200, 100)
+    healthFill.Parent = barBack
+
+    local cornerFill = Instance.new("UICorner")
+    cornerFill.CornerRadius = UDim.new(0, 8)
+    cornerFill.Parent = healthFill
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(18,18,18)
+    stroke.Thickness = 2
+    stroke.Parent = barBack
+
+    return {
+        billboard = billboard,
+        nameLabel = nameLabel,
+        healthBack = barBack,
+        healthFill = healthFill,
+    }
+end
+
+local function updateHudForCharacter(trackedInfo, humanoid)
+    if not trackedInfo or not humanoid then return end
+    local pct = math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1)
+    local targetX = pct
+	trackedInfo.healthFill:TweenSize(UDim2.new(targetX, 0, 1, 0), Enum.EasingDirection.Out, Enum.EasingStyle.Quart, 0.12, true)
+    local col
+    if pct > 0.5 then
+        col = Color3.fromRGB(80, 255, 80)
+    elseif pct > 0.3 then
+        col = Color3.fromRGB(255, 255, 0)
+    else
+        col = Color3.fromRGB(255, 80, 80)
+    end
+    trackedInfo.healthFill.BackgroundColor3 = col
+end
+
+local function trackCharacter(character, player)
+    if player == Players.LocalPlayer then return end
+    if not character then return end
+    
+    if tracked[character] then 
+        if tracked[character].info and tracked[character].info.billboard then
+            tracked[character].info.billboard.Enabled = espVisible
+        end
+        return 
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then
+        humanoid = character:WaitForChild("Humanoid", 2)
+        if not humanoid then return end
+    end
+
+    local info = createBillboardForCharacter(character, player)
+    if not info then return end
+
+    updateHudForCharacter(info, humanoid)
+
+    local connHealth = humanoid.HealthChanged:Connect(function()
+        updateHudForCharacter(info, humanoid)
+    end)
+
+    local connDied = humanoid.Died:Connect(function()
+        if info.billboard and info.billboard.Parent then
+            info.billboard:Destroy()
+        end
+    end)
+
+    tracked[character] = {
+        info = info,
+        connections = { connHealth, connDied },
+    }
+end
+
+local function untrackCharacter(character)
+    if not character then return end
+    local t = tracked[character]
+    if t then
+        for _,c in ipairs(t.connections) do
+            if c and c.Disconnect then
+                pcall(function() c:Disconnect() end)
+            end
+        end
+        if t.info and t.info.billboard and t.info.billboard.Parent then
+            t.info.billboard:Destroy()
+        end
+        tracked[character] = nil
+    end
+end
+
+
+local function FindPlayerMDValue(player)
+    local character = player.Character
+    if not character then return nil end
+    
+    local combat = character:FindFirstChild("combat")
+    if combat then
+        local mode = combat:FindFirstChild("mode")
+        if mode and mode:IsA("IntConstrainedValue") then
+            return mode
+        end
+    end
+    
+    return nil
+end
+
+local function FindPlayerStaminaValue(player)
+    local character = player.Character
+    if not character then return nil end
+    
+    local combat = character:FindFirstChild("combat")
+    if combat then
+        local stamina = combat:FindFirstChild("stamina")
+        if stamina and (stamina:IsA("IntValue") or stamina:IsA("NumberValue") or stamina:IsA("IntConstrainedValue")) then
+            return stamina
+        end
+    end
+    
+    return nil
+end
+
+local function FindPlayerStamina2Value(player)
+    local character = player.Character
+    if not character then return nil end
+    
+    local combat = character:FindFirstChild("combat")
+    if combat then
+        local stamina2 = combat:FindFirstChild("stamina2")
+        if stamina2 and (stamina2:IsA("IntValue") or stamina2:IsA("NumberValue") or stamina2:IsA("IntConstrainedValue")) then
+            return stamina2
+        end
+    end
+    
+    return nil
+end
+
+local function createOverlayGui()
+    if overlayGui and overlayGui.Parent then return overlayGui end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "DevOverlayHUD"
+    sg.ResetOnSpawn = false
+    sg.Enabled = true
+    sg.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame")
+    frame.Name = "OverlayFrame"
+    frame.Size = UDim2.new(0, 400, 0, 400)
+    frame.Position = OVERLAY_POSITION
+    frame.BackgroundTransparency = 0.08
+    frame.BackgroundColor3 = Color3.fromRGB(15, 0, 5)     
+    frame.BorderSizePixel = 0
+    frame.Parent = sg
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = frame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(255, 40, 40)            
+    stroke.Thickness = 3
+    stroke.Parent = frame
+
+    local glow = Instance.new("UIStroke")
+    glow.Color = Color3.fromRGB(255, 80, 80)
+    glow.Thickness = 6
+    glow.Transparency = 0.65
+    glow.Parent = frame
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 0, 32)
+    title.Position = UDim2.new(0, 23, 0, 8)
+    title.BackgroundTransparency = 1
+    title.Text = "PLAYERS"
+    title.TextColor3 = Color3.fromRGB(255, 80, 80)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 18
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = frame
+
+    local titleGlow = Instance.new("UIStroke")
+    titleGlow.Color = Color3.fromRGB(255, 120, 120)
+    titleGlow.Thickness = 1.5
+    titleGlow.Parent = title
+
+    local divider = Instance.new("Frame")
+    divider.Size = UDim2.new(1, -20, 0, 1)
+    divider.Position = UDim2.new(0, 10,0, 40)
+    divider.BackgroundColor3 = Color3.fromRGB(255, 40, 40)
+    divider.BorderSizePixel = 0
+    divider.Parent = frame
+
+    local content = Instance.new("Frame")
+    content.Name = "Content"
+    content.Size = UDim2.new(1, -16, 1, -52)
+    content.Position = UDim2.new(0,8,0, 48)
+    content.BackgroundTransparency = 1
+    content.Parent = frame
+
+    overlayGui = sg
+    return sg
+end
+
+-- ADICIONE ESTA FUNÇÃO PARA REINICIALIZAR OS LISTENERS DE OVERLAY
+local function reinitializeOverlayListeners(player)
+    if player == LocalPlayer then return end
+    
+    -- Remover entrada existente se houver
+    removeOverlayEntry(player)
+    
+    -- Esperar um pouco pelo novo character
+    task.wait(0.5)
+    
+    -- Recriar a entrada do overlay
+    ensureOverlayEntry(player)
+    
+    -- Atualizar imediatamente
+    updateOverlayForPlayer(player)
+end
+
+-- MODIFIQUE A FUNÇÃO ensureOverlayEntry para ser mais robusta
+local function ensureOverlayEntry(player)
+    if player == LocalPlayer then return nil end
+
+     if not overlayGui or not overlayGui.Parent then
+        createOverlayGui()
+        if not overlayGui then return nil end
+    end
+    
+    
+  local content = overlayGui:FindFirstChild("OverlayFrame")
+    if not content then return nil end
+    content = content:FindFirstChild("Content")
+    if not content then return nil end
+
+   -- Se já existe, verificar se ainda é válido
+    if overlayList[player] then 
+        local entry = overlayList[player]
+        if entry.entry and entry.entry.Parent then
+            return overlayList[player]
+        else
+            -- Entry foi destruída, remover e recriar
+            removeOverlayEntry(player)
+        end
+    end
+    
+    local sg = createOverlayGui()
+    local content = sg.OverlayFrame.Content
+
+    if overlayList[player] then return overlayList[player] end
+
+    local entry = Instance.new("Frame")
+    entry.Size = UDim2.new(1, 0, 0, 28)
+    entry.BackgroundTransparency = 1
+    entry.Parent = content
+
+    local nameLbl = Instance.new("TextLabel")
+    nameLbl.Size = UDim2.new(0, 0, 1, 0)
+    nameLbl.Position = UDim2.new(0.03, 0, 0, 0)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Font = Enum.Font.Gotham
+    nameLbl.TextSize = 14
+    nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+    nameLbl.TextColor3 = Color3.fromRGB(230,230,230)
+    nameLbl.Text = player.Name
+    nameLbl.Parent = entry
+
+    local healthLabel = Instance.new("TextLabel")
+    healthLabel.Size = UDim2.new(0, 0, 1, 0)
+    healthLabel.Position = UDim2.new(0.59, 0, 0, 0)
+    healthLabel.BackgroundTransparency = 1
+    healthLabel.Font = Enum.Font.GothamSemibold
+    healthLabel.TextSize = 14
+    healthLabel.TextXAlignment = Enum.TextXAlignment.Right
+    healthLabel.TextColor3 = Color3.fromRGB(230,230,230)
+    healthLabel.Text = "100"
+    healthLabel.Parent = entry
+
+    local mdLabel = Instance.new("TextLabel")
+    mdLabel.Size = UDim2.new(0, 0, 1, 0)
+    mdLabel.Position = UDim2.new(0.97, 0, 0, 0)
+    mdLabel.BackgroundTransparency = 1
+    mdLabel.Font = Enum.Font.GothamSemibold
+    mdLabel.TextSize = 14
+    mdLabel.TextXAlignment = Enum.TextXAlignment.Right
+    mdLabel.TextColor3 = Color3.fromRGB(180, 100, 255)
+    mdLabel.Text = "0"
+    mdLabel.Parent = entry
+
+    local staminaLabel = Instance.new("TextLabel")
+    staminaLabel.Size = UDim2.new(0, 0, 1, 0)
+    staminaLabel.Position = UDim2.new(0.73, 0, 0, 0)
+    staminaLabel.BackgroundTransparency = 1
+    staminaLabel.Font = Enum.Font.GothamSemibold
+    staminaLabel.TextSize = 14
+    staminaLabel.TextXAlignment = Enum.TextXAlignment.Right
+    staminaLabel.TextColor3 = Color3.fromRGB(100, 150, 255)
+    staminaLabel.Text = "0"
+    staminaLabel.Parent = entry
+
+    local stamina2Label = Instance.new("TextLabel")
+    stamina2Label.Size = UDim2.new(0, 0, 1, 0)
+    stamina2Label.Position = UDim2.new(0.85, 0, 0, 0)
+    stamina2Label.BackgroundTransparency = 1
+    stamina2Label.Font = Enum.Font.GothamSemibold
+    stamina2Label.TextSize = 14
+    stamina2Label.TextXAlignment = Enum.TextXAlignment.Right
+    stamina2Label.TextColor3 = Color3.fromRGB(255, 165, 0)
+    stamina2Label.Text = "0"
+    stamina2Label.Parent = entry
+
+    overlayList[player] = {
+        entry = entry,
+        name = nameLbl,
+        healthLabel = healthLabel,
+        mdLabel = mdLabel,
+        staminaLabel = staminaLabel,
+        stamina2Label = stamina2Label,
+        connections = {}
+    }
+
+    -- Função para configurar listeners
+    local function setupValueListeners(character)
+        if not character then return end
+        
+        -- Limpar conexões antigas
+        for _, conn in ipairs(overlayList[player].connections) do
+            if conn then
+                pcall(function() conn:Disconnect() end)
+            end
+        end
+        overlayList[player].connections = {}
+        
+        -- Listener de HealthChanged
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            local healthConn = humanoid.HealthChanged:Connect(function()
+                updateOverlayForPlayer(player)
+            end)
+            table.insert(overlayList[player].connections, healthConn)
+            
+            -- Também conectar ao evento Died para detectar morte
+            local diedConn = humanoid.Died:Connect(function()
+                -- Forçar atualização quando morrer
+                task.wait(0.1)
+                updateOverlayForPlayer(player)
+            end)
+            table.insert(overlayList[player].connections, diedConn)
+        end
+        
+        -- Listener para MD Value
+        local function setupMDListener()
+            local mdValue = FindPlayerMDValue(player)
+            if mdValue then
+                local mdConn = mdValue.Changed:Connect(function()
+                    updateOverlayForPlayer(player)
+                end)
+                table.insert(overlayList[player].connections, mdConn)
+            else
+                -- Tentar novamente depois de um tempo se não encontrou
+                task.delay(1, function()
+                    if overlayList[player] then
+                        setupMDListener()
+                    end
+                end)
+            end
+        end
+        setupMDListener()
+        
+        -- Listener para Stamina
+        local function setupStaminaListener()
+            local staminaValue = FindPlayerStaminaValue(player)
+            if staminaValue then
+                local staminaConn = staminaValue.Changed:Connect(function()
+                    updateOverlayForPlayer(player)
+                end)
+                table.insert(overlayList[player].connections, staminaConn)
+            else
+                task.delay(1, function()
+                    if overlayList[player] then
+                        setupStaminaListener()
+                    end
+                end)
+            end
+        end
+        setupStaminaListener()
+        
+        -- Listener para Stamina2
+        local function setupStamina2Listener()
+            local stamina2Value = FindPlayerStamina2Value(player)
+            if stamina2Value then
+                local stamina2Conn = stamina2Value.Changed:Connect(function()
+                    updateOverlayForPlayer(player)
+                end)
+                table.insert(overlayList[player].connections, stamina2Conn)
+            else
+                task.delay(1, function()
+                    if overlayList[player] then
+                        setupStamina2Listener()
+                    end
+                end)
+            end
+        end
+        setupStamina2Listener()
+    end
+    
+    -- Configurar listeners se o character já existe
+    if player.Character then
+        task.delay(0.5, function()
+            if overlayList[player] then
+                setupValueListeners(player.Character)
+            end
+        end)
+    end
+    
+    -- Listener para quando o character é adicionado
+    local characterAddedConn = player.CharacterAdded:Connect(function(character)
+        task.wait(0.5) -- Esperar o character carregar completamente
+        if overlayList[player] then
+            setupValueListeners(character)
+            updateOverlayForPlayer(player)
+        end
+    end)
+    table.insert(overlayList[player].connections, characterAddedConn)
+    
+    -- Listener para quando o character é removido
+    local characterRemovingConn = player.CharacterRemoving:Connect(function()
+        -- Não limpar as conexões aqui, apenas atualizar display
+        task.wait(0.1)
+        if overlayList[player] then
+            updateOverlayForPlayer(player)
+        end
+    end)
+    table.insert(overlayList[player].connections, characterRemovingConn)
+
+    -- Função para reorganizar entradas
+    local function resort()
+        local idx = 0
+        for p, v in pairs(overlayList) do
+            if p ~= Players.LocalPlayer then
+                idx = idx + 1
+                v.entry.Position = UDim2.new(0,0,0,(idx-1) * 32)
+            end
+        end
+    end
+    resort()
+    
+    return overlayList[player]
+end
+
+-- MODIFIQUE A FUNÇÃO removeOverlayEntry para ser mais segura
+local function removeOverlayEntry(player)
+    local e = overlayList[player]
+    if e then
+        -- Desconectar todas as conexões
+        if e.connections then
+            for _, conn in ipairs(e.connections) do
+                if conn then
+                    pcall(function() conn:Disconnect() end)
+                end
+            end
+        end
+        
+        -- Remover a entry se ainda existir
+        if e.entry and e.entry.Parent then 
+            pcall(function() e.entry:Destroy() end)
+        end
+        overlayList[player] = nil
+    end
+    
+    -- Reorganizar entradas restantes
+    local function resort()
+        local idx = 0
+        for p, v in pairs(overlayList) do
+            if p and p.Parent and p ~= Players.LocalPlayer then
+                idx = idx + 1
+                if v.entry and v.entry.Parent then
+                    v.entry.Position = UDim2.new(0,0,0,(idx-1) * 32)
+                end
+            end
+        end
+    end
+    resort()
+end
+
+
+local function cleanupInvalidOverlays()
+    local toRemove = {}
+    
+    for player, entry in pairs(overlayList) do
+        if not player or not player.Parent then
+            table.insert(toRemove, player)
+        elseif not entry.entry or not entry.entry.Parent then
+            table.insert(toRemove, player)
+        end
+    end
+    
+    for _, player in ipairs(toRemove) do
+        removeOverlayEntry(player)
+    end
+end
+
+-- MODIFIQUE A FUNÇÃO updateOverlayForPlayer para prevenir o erro
+local function updateOverlayForPlayer(player)
+    if player == Players.LocalPlayer then return end
+    
+    -- Verificar se o player ainda é válido
+    if not player or not player.Parent then
+        removeOverlayEntry(player)
+        return
+    end
+    
+    local entry = overlayList[player]
+    if not entry then 
+        ensureOverlayEntry(player)
+        return
+    end
+    
+    -- Verificar se os componentes do entry ainda existem
+    if not entry.entry or not entry.entry.Parent then
+        removeOverlayEntry(player)
+        ensureOverlayEntry(player)
+        return
+    end
+    
+    local char = player.Character
+    if not char then
+        if entry.healthLabel and entry.healthLabel.Parent then
+            entry.healthLabel.Text = "0"
+            entry.mdLabel.Text = "0"
+            entry.staminaLabel.Text = "0"
+            entry.stamina2Label.Text = "0"
+            entry.healthLabel.TextColor3 = Color3.fromRGB(150,150,150)
+            entry.mdLabel.TextColor3 = Color3.fromRGB(150,150,150)
+            entry.staminaLabel.TextColor3 = Color3.fromRGB(150,150,150)
+            entry.stamina2Label.TextColor3 = Color3.fromRGB(150,150,150)
+        end
+        return
+    end
+    
+    local success, result = pcall(function()
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum then 
+            if entry.healthLabel and entry.healthLabel.Parent then
+                entry.healthLabel.Text = "0"
+                entry.mdLabel.Text = "0"
+                entry.staminaLabel.Text = "0"
+                entry.stamina2Label.Text = "0"
+                entry.healthLabel.TextColor3 = Color3.fromRGB(150,150,150)
+                entry.mdLabel.TextColor3 = Color3.fromRGB(150,150,150)
+                entry.staminaLabel.TextColor3 = Color3.fromRGB(150,150,150)
+                entry.stamina2Label.TextColor3 = Color3.fromRGB(150,150,150)
+            end
+            return
+        end
+        
+        -- Verificar novamente se os labels existem antes de atualizar
+        if not entry.healthLabel or not entry.healthLabel.Parent then
+            return
+        end
+        
+        -- Atualizar saúde
+        local currentHealth = math.floor(hum.Health)
+        entry.healthLabel.Text = tostring(currentHealth)
+        
+        local pct = math.clamp(hum.Health / math.max(1, hum.MaxHealth), 0, 1)
+        if pct > 0.5 then
+            entry.healthLabel.TextColor3 = Color3.fromRGB(80, 255, 80)
+        elseif pct > 0.3 then
+            entry.healthLabel.TextColor3 = Color3.fromRGB(255, 255, 0)
+        else
+            entry.healthLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+        end
+        
+        -- Atualizar MD
+        local mdValue = FindPlayerMDValue(player)
+        if mdValue then
+            local currentMD = mdValue.Value
+            entry.mdLabel.Text = tostring(currentMD)
+            entry.mdLabel.TextColor3 = Color3.fromRGB(180, 100, 255)
+        else
+            entry.mdLabel.Text = "0"
+            entry.mdLabel.TextColor3 = Color3.fromRGB(150,150,150)
+        end
+        
+        -- Atualizar Stamina
+        local staminaValue = FindPlayerStaminaValue(player)
+        if staminaValue then
+            local currentStamina = staminaValue.Value
+            entry.staminaLabel.Text = tostring(currentStamina)
+            entry.staminaLabel.TextColor3 = Color3.fromRGB(100, 150, 255)
+            
+            if currentStamina and currentStamina < 30 then
+                entry.staminaLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+            end
+        else
+            entry.staminaLabel.Text = "0"
+            entry.staminaLabel.TextColor3 = Color3.fromRGB(150,150,150)
+        end
+        
+        -- Atualizar Stamina2
+        local stamina2Value = FindPlayerStamina2Value(player)
+        if stamina2Value then
+            local currentStamina2 = stamina2Value.Value
+            entry.stamina2Label.Text = tostring(currentStamina2)
+            entry.stamina2Label.TextColor3 = Color3.fromRGB(255, 165, 0)
+            
+            if currentStamina2 and currentStamina2 < 30 then
+                entry.stamina2Label.TextColor3 = Color3.fromRGB(255, 80, 80)
+            end
+        else
+            entry.stamina2Label.Text = "0"
+            entry.stamina2Label.TextColor3 = Color3.fromRGB(150,150,150)
+        end
+    end)
+    
+    if not success then
+        -- Em caso de erro, remover e recriar a entrada
+        task.delay(1, function()
+            if player and player.Parent then
+                removeOverlayEntry(player)
+                ensureOverlayEntry(player)
+            end
+        end)
+    end
+end
+
+
+
+local function refreshAllOverlays()
+    for player, _ in pairs(overlayList) do
+        reinitializeOverlayListeners(player)
+    end
+    print("Todos os overlays foram atualizados!")
+end
+
+local function updateAllOverlay()
+    for player, _ in pairs(overlayList) do
+        updateOverlayForPlayer(player)
+    end
+end
+
+local function onCharacterAdded(character, player)
+    trackCharacter(character, player)
+    ensureOverlayEntry(player)
+    
+    task.wait()
+    updateOverlayForPlayer(player)
+end
+
+local function toggleOverlayVisibility()
+    overlayVisible = not overlayVisible
+    print("Overlay: " .. (overlayVisible and "ON" or "OFF"))
+    
+    if not overlayGui then
+        initializeOverlay()
+    end
+    
+    if overlayGui then
+        overlayGui.Enabled = overlayVisible
+    end
+end
+
+
+
+local function IsSquadMember(player)
+    if not settings.TeamCheck then return false end
+    if player == LocalPlayer then return true end
+    
+    if not LocalPlayer:FindFirstChild("currentparty") then
+        return false 
+    end
+    
+    local myParty = LocalPlayer.currentparty.Value
+    if myParty == nil then
+        return false 
+    end
+    
+    
+    if not player:FindFirstChild("currentparty") then
+        return false 
+    end
+    
+    local theirParty = player.currentparty.Value
+    if theirParty == nil then
+        return false 
+    end
+    
+  
+    return myParty == theirParty
+end
+
+
+local function setupSquadMonitoring()
+    
+    if LocalPlayer:FindFirstChild("currentparty") then
+        LocalPlayer.currentparty.Changed:Connect(function()
+            print("Seu squad mudou para: " .. tostring(LocalPlayer.currentparty.Value))
+        end)
+    else
+        
+        LocalPlayer.ChildAdded:Connect(function(child)
+            if child.Name == "currentparty" then
+                child.Changed:Connect(function()
+                    print("Seu squad mudou para: " .. tostring(child.Value))
+                end)
+            end
+        end)
+    end
+    
+    
+    Players.PlayerAdded:Connect(function(player)
+        if player == LocalPlayer then return end
+        
+        
+        local success = pcall(function()
+            local currentparty = player:WaitForChild("currentparty", 10)
+            if currentparty then
+                currentparty.Changed:Connect(function()
+                
+                end)
+            end
+        end)
+    end)
+    
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player:FindFirstChild("currentparty") then
+            player.currentparty.Changed:Connect(function()
+              
+            end)
+        end
+    end
+end
+
+local function IsVisible(part)
+    if not settings.WallCheck then return true end
+    if not part or not part.Position then return false end
+    
+    local origin = Camera.CFrame.Position
+    local dir = (part.Position - origin)
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Blacklist
+    rayParams.FilterDescendantsInstances = {LocalPlayer.Character}
+    rayParams.IgnoreWater = true
+    
+    local result = Workspace:Raycast(origin, dir.Unit * dir.Magnitude, rayParams)
+    if result then
+        return result.Instance:IsDescendantOf(part.Parent)
+    end
+    return true
+end
+
+local lastTargetCheck = 0
+local targetCheckInterval = 0.15
+
+local function GetBestTarget()
+    local now = tick()
+    if (now - lastTargetCheck) < targetCheckInterval then
+        return currentTarget and currentTarget.Parent and currentTarget or nil
+    end
+    lastTargetCheck = now
+    
+    if not Camera or not Camera.CFrame then return nil, nil end
+    
+    local camPos = Camera.CFrame.Position
+    local camDir = Camera.CFrame.LookVector
+    local bestPlayer, bestPart, bestScore = nil, nil, -1
+    
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        if not player.Character then continue end
+        if IsSquadMember(player) then continue end
+        
+        local part = player.Character:FindFirstChild("Head") or player.Character:FindFirstChild("UpperTorso") or player.Character:FindFirstChild("HumanoidRootPart")
+        if not part then continue end
+
+        local dir = part.Position - camPos
+        local dist = dir.Magnitude
+        
+        if dist > settings.MaxDistance then continue end
+        
+        local dot = camDir:Dot(dir.Unit)
+        local angle = math.deg(math.acos(math.clamp(dot, -1, 1)))
+        
+        if angle > settings.FOV/2 then continue end
+        
+        if not IsVisible(part) then continue end
+        
+        local score = 0
+        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+        local health = humanoid and (humanoid.Health / math.max(1, humanoid.MaxHealth)) or 1
+        
+        if settings.Priority == "Closest" then
+            score = 1000 - dist - angle * 10
+        elseif settings.Priority == "Crosshair" then
+            score = 1000 - angle * 20
+        elseif settings.Priority == "LowestHealth" then
+            score = 1000 - (health * 500) - angle * 10
+        end
+        
+        if score > bestScore then
+            bestScore = score
+            bestPlayer = player
+            bestPart = part
+        end
+    end
+    
+    return bestPlayer, bestPart
+end
+
+local function SmoothLookAt(currentCFrame, targetPos, smooth)
+    local desiredCFrame = CFrame.new(currentCFrame.Position, targetPos)
+    
+    if smooth <= 0 then return desiredCFrame end
+    return currentCFrame:Lerp(desiredCFrame, math.clamp(smooth, 0, 1))
+end
+
+local function GetBrutalPrediction(targetPart, predictionMultiplier)
+    if not targetPart or predictionMultiplier <= 0 or not targetPart.Parent then
+        return targetPart.Position  -- Retorna posição atual sem predição
+    end
+
+    local character = targetPart.Parent
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return targetPart.Position end
+    
+    -- 1. VELOCIDADE ATUAL E HISTÓRICO
+    local targetVelocity = rootPart.Velocity
+    local targetSpeed = targetVelocity.Magnitude
+    
+    -- Inicializar histórico para este alvo
+    if not predictionHistory[targetPart] then
+        predictionHistory[targetPart] = {
+            positions = {},
+            velocities = {},
+            timestamps = {},
+            accelerations = {}
+        }
+    end
+    
+    local history = predictionHistory[targetPart]
+    local now = tick()
+    
+    -- 2. ADICIONAR DADOS ATUAIS AO HISTÓRICO
+    table.insert(history.positions, targetPart.Position)
+    table.insert(history.velocities, targetVelocity)
+    table.insert(history.timestamps, now)
+    
+    -- Manter apenas os últimos 10 frames
+    if #history.positions > 10 then
+        table.remove(history.positions, 1)
+        table.remove(history.velocities, 1)
+        table.remove(history.timestamps, 1)
+    end
+    
+    -- 3. CALCULAR ACELERAÇÃO PRECISA
+    local acceleration = Vector3.new(0, 0, 0)
+    if #history.velocities >= 2 then
+        local recentVel = history.velocities[#history.velocities]
+        local previousVel = history.velocities[#history.velocities - 1]
+        local timeDiff = history.timestamps[#history.timestamps] - history.timestamps[#history.timestamps - 1]
+        
+        if timeDiff > 0 then
+            acceleration = (recentVel - previousVel) / timeDiff
+            table.insert(history.accelerations, acceleration)
+            
+            -- Manter histórico de acelerações
+            if #history.accelerations > 5 then
+                table.remove(history.accelerations, 1)
+            end
+        end
+    end
+    
+    -- 4. CALCULAR ACELERAÇÃO MÉDIA (suavizar flutuações)
+    local avgAcceleration = Vector3.new(0, 0, 0)
+    if #history.accelerations > 0 then
+        for _, accel in ipairs(history.accelerations) do
+            avgAcceleration = avgAcceleration + accel
+        end
+        avgAcceleration = avgAcceleration / #history.accelerations
+    end
+    
+    -- 5. PREDIÇÃO BASE COM FÍSICA REAL
+    local basePrediction = predictionMultiplier
+    
+    -- Fórmula física completa: S = S0 + V*t + (A*t²)/2
+    local predictedPos = targetPart.Position + 
+                        (targetVelocity * basePrediction) + 
+                        (avgAcceleration * 0.5 * basePrediction * basePrediction)
+    
+    -- 6. DETECÇÃO DE PADRÕES DE MOVIMENTO
+    if #history.positions >= 3 then
+        -- Calcular tendência de movimento
+        local recentPos = history.positions[#history.positions]
+        local midPos = history.positions[#history.positions - 1]
+        local oldPos = history.positions[#history.positions - 2]
+        
+        -- Vetores de movimento
+        local recentMovement = recentPos - midPos
+        local previousMovement = midPos - oldPos
+        
+        -- Detectar mudanças bruscas de direção
+        local directionChange = recentMovement:Dot(previousMovement)
+        local movementSimilarity = directionChange / (recentMovement.Magnitude * previousMovement.Magnitude + 0.001)
+        
+        -- Se está fazendo curva, ajustar predição
+        if movementSimilarity < 0.7 then
+            local curveIntensity = 1 - movementSimilarity
+            local curveAdjustment = (recentMovement - previousMovement) * (basePrediction * curveIntensity * 0.5)
+            predictedPos = predictedPos + curveAdjustment
+        end
+    end
+    
+    -- 7. PREDIÇÃO DE MOVIMENTOS CIRCULARES/ESQUIVAS
+    if targetSpeed > 8 and #history.positions >= 5 then
+        -- Analisar padrão de movimento dos últimos 5 frames
+        local movementPattern = {}
+        for i = 2, #history.positions do
+            local movement = (history.positions[i] - history.positions[i-1]).Unit
+            table.insert(movementPattern, movement)
+        end
+        
+        -- Detectar movimento circular
+        local circularScore = 0
+        for i = 2, #movementPattern do
+            local angle = movementPattern[i]:Dot(movementPattern[i-1])
+            circularScore = circularScore + (1 - math.abs(angle))
+        end
+        
+        -- Se detectado movimento circular, ajustar predição
+        if circularScore > 2.5 then
+            local circularAdjustment = (history.positions[#history.positions] - history.positions[1]).Unit * (basePrediction * 0.3)
+            predictedPos = predictedPos + circularAdjustment
+        end
+    end
+    
+    -- 8. COMPENSAÇÃO DE LATÊNCIA DE REDE
+    local ping = GetPing() / 1000 -- Converter para segundos
+    local networkCompensation = ping * 0.5 -- Compensar 50% do ping
+    predictedPos = predictedPos + (targetVelocity * networkCompensation)
+    
+    -- 9. PREDIÇÃO VERTICAL INTELIGENTE (para saltos/queda)
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        local gravity = workspace.Gravity / 196.2
+        local verticalVelocity = targetVelocity.Y
+        
+        -- Se está caindo ou pulando
+        if math.abs(verticalVelocity) > 5 then
+            predictedPos = Vector3.new(
+                predictedPos.X,
+                predictedPos.Y + (verticalVelocity * basePrediction) + (gravity * 0.5 * basePrediction * basePrediction),
+                predictedPos.Z
+            )
+        end
+    end
+    
+    -- 10. SUAVIZAÇÃO FINAL DA PREDIÇÃO
+    if history.lastPredictedPos then
+        -- Suavizar transições entre predições
+        local smoothFactor = 0.3
+        predictedPos = history.lastPredictedPos:Lerp(predictedPos, smoothFactor)
+    end
+    
+    history.lastPredictedPos = predictedPos
+    
+    return predictedPos
+end
+
+-- Adicione após as outras funções de predição
+local function GetDynamicPredictionValue(targetPart)
+    if not targetPart or not targetPart.Parent then
+        return 0.15 -- Valor padrão aumentado
+    end
+    
+    local rootPart = targetPart.Parent:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return 0.15 end
+    
+    local targetVelocity = rootPart.Velocity
+    local targetSpeed = targetVelocity.Magnitude
+    
+    -- MAPEAMENTO BRUTAL PARA VELOCIDADES ALTAS
+    if targetSpeed < 10 then
+        -- Muito lento
+        return 0.08
+    elseif targetSpeed < 25 then
+        -- Velocidade normal
+        return 0.15
+    elseif targetSpeed < 50 then
+        -- Rápido
+        return 0.25
+    elseif targetSpeed < 80 then
+        -- Muito rápido
+        return 0.4
+    elseif targetSpeed < 120 then
+        -- Velocidade extrema
+        return 0.6
+    elseif targetSpeed < 200 then
+        -- Hacks/teleport
+        return 0.8
+    else
+        -- Velocidade impossível
+        return 1.0
+    end
+end
+
+-- SUBSTITUA pela versão corrigida:
+local function GetSmartPrediction(targetPart, basePredictionMultiplier)
+    -- SE AUTO-PREDICTION ESTÁ ATIVADO, IGNORAR basePredictionMultiplier
+    if autoPredictionEnabled then
+        local dynamicPrediction = GetDynamicPredictionValue(targetPart)
+        return GetBrutalPrediction(targetPart, dynamicPrediction)
+    end
+    
+    -- SE AUTO-PREDICTION DESATIVADO, usar valor manual (e verificar se é 0)
+    if basePredictionMultiplier <= 0 then
+        return targetPart.Position  -- Sem predição
+    else
+        return GetBrutalPrediction(targetPart, basePredictionMultiplier)
+    end
+end
+
+-- FUNÇÃO PARA LIMPAR HISTÓRICO DE ALVOS REMOVIDOS
+local function CleanPredictionHistory()
+    for targetPart, history in pairs(predictionHistory) do
+        if not targetPart or not targetPart.Parent then
+            predictionHistory[targetPart] = nil
+        end
+    end
+end
+
+
+local aimbotConnection = nil
+local function StartAimbot()
+    if aimbotConnection then return end
+    
+    aimbotConnection = RunService.RenderStepped:Connect(function()
+        if not aimbotEnabled then return end
+        if not Camera or not Camera.CFrame then return end
+        
+        -- Limpar histórico periodicamente
+        local now = tick()
+        if now - lastPredictionUpdate > PREDICTION_UPDATE_RATE then
+            CleanPredictionHistory()
+            lastPredictionUpdate = now
+        end
+        
+        if not currentTarget or not currentTarget.Parent then
+            local player, part = GetBestTarget()
+            if player then 
+                currentTarget = part
+            else
+                currentTarget = nil
+                return
+            end
+        end
+        
+        if currentTarget then
+            -- USAR CONFIGURAÇÃO SALVA OU VALOR PADRÃO
+            local predictionValue = settings.Prediction or 0.15
+            local targetPos = GetSmartPrediction(currentTarget, predictionValue)
+            
+            Camera.CFrame = SmoothLookAt(Camera.CFrame, targetPos, settings.Smoothness)
+        end
+    end)
+end
+
+local function StopAimbot()
+    if aimbotConnection then
+        aimbotConnection:Disconnect()
+        aimbotConnection = nil
+    end
+    currentTarget = nil
+end
+
+local function ToggleAimbot(state)
+    aimbotEnabled = state
+    if aimbotEnabled then
+        StartAimbot()
+    else
+        StopAimbot()
+    end
+end
+
+local function MatchesInputToKey(input, chosenKey)
+    if not input then return false end
+    if chosenKey == "" then return false end
+    
+    if chosenKey == "MouseButton2" then
+        return input.UserInputType == Enum.UserInputType.MouseButton2
+    end
+    
+    if chosenKey == "LeftShift" then return input.KeyCode == Enum.KeyCode.LeftShift end
+    if chosenKey == "RightShift" then return input.KeyCode == Enum.KeyCode.RightShift end
+    
+    local ok, kc = pcall(function() return Enum.KeyCode[chosenKey] end)
+    if ok and kc then
+        return input.KeyCode == kc
+    end
+    
+    return false
+end
+
+
+local function ToggleGUI()
+    if mainGUI then
+        mainGUI.Enabled = not mainGUI.Enabled
+    end
+end
+
+local function CreateHubGUI()
+    if LocalPlayer.PlayerGui:FindFirstChild("HubMainGUI") then
+        LocalPlayer.PlayerGui.HubMainGUI:Destroy()
+    end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "HubMainGUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 400, 0, 550)
+    mainFrame.Position = UDim2.new(0, 20, 0.7, -250)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    mainFrame.BackgroundTransparency = 0.1
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Parent = screenGui
+
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = mainFrame
+
+       local mainFrameStroke = Instance.new("UIStroke")
+    mainFrameStroke.Color = Color3.fromRGB(255, 40, 40)     
+    mainFrameStroke.Thickness = 3
+    mainFrameStroke.Parent = mainFrame
+
+    local mainFrameGlow = Instance.new("UIStroke")
+    mainFrameGlow.Color = Color3.fromRGB(255, 80, 80)       
+    mainFrameGlow.Thickness = 5
+    mainFrameGlow.Transparency = 0.7
+    mainFrameGlow.Parent = mainFrame
+
+    makeMovable(mainFrame)
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 0, 40)
+    title.Position = UDim2.new(0, 15, 0, 9)
+    title.BackgroundTransparency = 1
+    title.Text = "CLARA SETTINGS"
+    title.TextColor3 = Color3.fromRGB(255, 80, 80)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 20
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = mainFrame
+
+    local divider = Instance.new("Frame")
+    divider.Size = UDim2.new(1, -20, 0, 1)
+    divider.Position = UDim2.new(0, 10, 0, 50)
+    divider.BackgroundColor3 = Color3.fromRGB(100, 0, 255)
+    divider.BorderSizePixel = 0
+    divider.Parent = mainFrame
+
+    local titleStroke = Instance.new("UIStroke")
+    titleStroke.Color = Color3.fromRGB(80, 0, 160)
+    titleStroke.Thickness = 2
+    titleStroke.Parent = title
+
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Size = UDim2.new(1, -16, 1, -120)
+    scrollFrame.Position = UDim2.new(0, 8, 0, 60)
+    scrollFrame.BackgroundTransparency = 1
+    scrollFrame.BorderSizePixel = 0
+    scrollFrame.ScrollBarThickness = 6
+    scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 150)
+    scrollFrame.Parent = mainFrame
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 10)
+    layout.Parent = scrollFrame
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingLeft = UDim.new(0, 5)
+    padding.PaddingRight = UDim.new(0, 5)
+    padding.PaddingTop = UDim.new(0, 5)
+    padding.Parent = scrollFrame
+
+    local function CreateNumberInput(label, current, maxValue, callback)
+        local container = Instance.new("Frame")
+        container.Size = UDim2.new(1, -10, 0, 40)
+        container.BackgroundTransparency = 1
+        container.Parent = scrollFrame
+
+        local labelText = Instance.new("TextLabel")
+        labelText.Size = UDim2.new(0.7, 0, 1, 0)
+        labelText.Position = UDim2.new(0, 0, 0, 0)
+        labelText.BackgroundTransparency = 1
+        labelText.Text = label
+        labelText.TextColor3 = Color3.fromRGB(220, 180, 255)
+        labelText.Font = Enum.Font.Gotham
+        labelText.TextSize = 14
+        labelText.TextXAlignment = Enum.TextXAlignment.Left
+        labelText.Parent = container
+
+        local inputFrame = Instance.new("Frame")
+        inputFrame.Size = UDim2.new(0, 80, 0, 25)
+        inputFrame.Position = UDim2.new(1, -80, 0.5, -12)
+        inputFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        inputFrame.Parent = container
+
+        local inputCorner = Instance.new("UICorner")
+        inputCorner.CornerRadius = UDim.new(0, 4)
+        inputCorner.Parent = inputFrame
+
+        local inputStroke = Instance.new("UIStroke")
+        inputStroke.Color = Color3.fromRGB(100, 0, 255)
+        inputStroke.Thickness = 1
+        inputStroke.Parent = inputFrame
+
+        local inputBtn = Instance.new("TextButton")
+        inputBtn.Size = UDim2.new(1, 0, 1, 0)
+        inputBtn.Position = UDim2.new(0, 0, 0, 0)
+        inputBtn.Text = tostring(current)
+        inputBtn.BackgroundTransparency = 1
+        inputBtn.TextColor3 = Color3.fromRGB(220, 180, 255)
+        inputBtn.Font = Enum.Font.Gotham
+        inputBtn.TextSize = 13
+        inputBtn.Parent = inputFrame
+
+        local textStroke = Instance.new("UIStroke")
+        textStroke.Color = Color3.fromRGB(80, 0, 160)
+        textStroke.Thickness = 1
+        textStroke.Parent = inputBtn
+
+        local inputting = false
+        
+        inputBtn.MouseButton1Click:Connect(function()
+            if not inputting then
+                inputting = true
+                inputBtn.Visible = false
+                
+                local textBox = Instance.new("TextBox")
+                textBox.Size = UDim2.new(1, 0, 1, 0)
+                textBox.Position = UDim2.new(0, 0, 0, 0)
+                textBox.PlaceholderText = "Max: " .. tostring(maxValue)
+                textBox.Text = ""
+                textBox.BackgroundTransparency = 1
+                textBox.TextColor3 = Color3.fromRGB(220, 180, 255)
+                textBox.Font = Enum.Font.Gotham
+                textBox.TextSize = 11
+                textBox.ClearTextOnFocus = false
+                textBox.Parent = inputFrame
+                
+                textBox:CaptureFocus()
+                
+                textBox.FocusLost:Connect(function(enterPressed)
+                    if enterPressed and textBox.Text ~= "" then
+                        local newValue = tonumber(textBox.Text)
+                        if newValue then
+                            newValue = math.clamp(newValue, 0, maxValue)
+                            inputBtn.Text = tostring(newValue)
+                            callback(newValue)
+                            SaveSettings()
+                        end
+                    end
+                    
+                    inputBtn.Visible = true
+                    textBox:Destroy()
+                    inputting = false
+                end)
+            end
+        end)
+
+        return container
+    end
+
+    local function CreateToggle(label, current, callback)
+        local container = Instance.new("Frame")
+        container.Size = UDim2.new(1, -10, 0, 40)
+        container.BackgroundTransparency = 1
+        container.Parent = scrollFrame
+
+        local labelText = Instance.new("TextLabel")
+        labelText.Size = UDim2.new(0.7, 0, 1, 0)
+        labelText.Position = UDim2.new(0, 0, 0, 0)
+        labelText.BackgroundTransparency = 1
+        labelText.Text = label
+        labelText.TextColor3 = Color3.fromRGB(220, 180, 255)
+        labelText.Font = Enum.Font.Gotham
+        labelText.TextSize = 14
+        labelText.TextXAlignment = Enum.TextXAlignment.Left
+        labelText.Parent = container
+
+        local toggleBackground = Instance.new("Frame")
+        toggleBackground.Size = UDim2.new(0, 50, 0, 25)
+        toggleBackground.Position = UDim2.new(1, -50, 0.5, -12)
+        toggleBackground.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        toggleBackground.Parent = container
+
+        local toggleCorner = Instance.new("UICorner")
+        toggleCorner.CornerRadius = UDim.new(0, 4)
+        toggleCorner.Parent = toggleBackground
+
+        local toggleStroke = Instance.new("UIStroke")
+        toggleStroke.Color = Color3.fromRGB(100, 0, 255)
+        toggleStroke.Thickness = 1
+        toggleStroke.Parent = toggleBackground
+
+        local toggle = Instance.new("TextButton")
+        toggle.Size = UDim2.new(1, 0, 1, 0)
+        toggle.Position = UDim2.new(0, 0, 0, 0)
+        toggle.Text = current and "ON" or "OFF"
+        toggle.BackgroundTransparency = 1
+        toggle.TextColor3 = Color3.fromRGB(220, 180, 255)
+        toggle.Font = Enum.Font.GothamBold
+        toggle.TextSize = 12
+        toggle.Parent = toggleBackground
+
+        local textGlow1 = Instance.new("UIStroke")
+        textGlow1.Color = Color3.fromRGB(80, 0, 160)
+        textGlow1.Thickness = 1
+        textGlow1.Parent = toggle
+
+        toggle.MouseButton1Click:Connect(function()
+            current = not current
+            toggle.Text = current and "ON" or "OFF"
+            toggleStroke.Color = Color3.fromRGB(100, 0, 255)
+            callback(current)
+            SaveSettings()
+        end)
+
+        return container
+    end
+
+    local function CreateDropdown(label, options, current, callback)
+        local container = Instance.new("Frame")
+        container.Size = UDim2.new(1, -10, 0, 60)
+        container.BackgroundTransparency = 1
+        container.Parent = scrollFrame
+
+        local labelText = Instance.new("TextLabel")
+        labelText.Size = UDim2.new(1, 0, 0, 20)
+        labelText.Position = UDim2.new(0, 0, 0, 0)
+        labelText.BackgroundTransparency = 1
+        labelText.Text = label
+        labelText.TextColor3 = Color3.fromRGB(220, 180, 255)
+        labelText.Font = Enum.Font.Gotham
+        labelText.TextSize = 14
+        labelText.TextXAlignment = Enum.TextXAlignment.Left
+        labelText.Parent = container
+
+        local dropdownFrame = Instance.new("Frame")
+        dropdownFrame.Size = UDim2.new(1, 0, 0, 30)
+        dropdownFrame.Position = UDim2.new(0, 0, 0, 25)
+        dropdownFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        dropdownFrame.Parent = container
+
+        local dropdownFrameCorner = Instance.new("UICorner")
+        dropdownFrameCorner.CornerRadius = UDim.new(0, 4)
+        dropdownFrameCorner.Parent = dropdownFrame
+
+        local dropdownFrameStroke = Instance.new("UIStroke")
+        dropdownFrameStroke.Color = Color3.fromRGB(100, 0, 255)
+        dropdownFrameStroke.Thickness = 1
+        dropdownFrameStroke.Parent = dropdownFrame
+
+        local dropdown = Instance.new("TextButton")
+        dropdown.Size = UDim2.new(1, 0, 1, 0)
+        dropdown.Position = UDim2.new(0, 0, 0, 0)
+        dropdown.Text = current
+        dropdown.BackgroundTransparency = 1
+        dropdown.TextColor3 = Color3.fromRGB(220, 180, 220)
+        dropdown.Font = Enum.Font.Gotham
+        dropdown.TextSize = 13
+        dropdown.TextXAlignment = Enum.TextXAlignment.Left
+        dropdown.Parent = dropdownFrame
+
+        local textStroke = Instance.new("UIStroke")
+        textStroke.Color = Color3.fromRGB(80, 0, 160)
+        textStroke.Thickness = 1
+        textStroke.Parent = dropdown
+
+        local textGlow = Instance.new("UIStroke")
+        textGlow.Color = Color3.fromRGB(80, 0, 160)
+        textGlow.Thickness = 1
+        textGlow.Transparency = 0.7
+        textGlow.Parent = dropdown
+
+        local dropdownPadding = Instance.new("UIPadding")
+        dropdownPadding.PaddingLeft = UDim.new(0, 156)
+        dropdownPadding.Parent = dropdown
+
+        local currentIndex = 1
+        for i, option in ipairs(options) do
+            if option == current then
+                currentIndex = i
+                break
+            end
+        end
+
+        dropdown.MouseButton1Click:Connect(function()
+            currentIndex = (currentIndex % #options) + 1
+            local newValue = options[currentIndex]
+            dropdown.Text = newValue
+            labelText.Text = label
+            callback(newValue)
+            SaveSettings()
+        end)
+
+        return container
+    end
+
+    local function CreateKeyInput(label, current, callback)
+        local container = Instance.new("Frame")
+        container.Size = UDim2.new(1, -10, 0, 60)
+        container.BackgroundTransparency = 1
+        container.Parent = scrollFrame
+
+        local labelText = Instance.new("TextLabel")
+        labelText.Size = UDim2.new(1, 0, 0, 20)
+        labelText.Position = UDim2.new(0, 0, 0, 0)
+        labelText.BackgroundTransparency = 1
+        labelText.Text = label
+        labelText.TextColor3 = Color3.fromRGB(220, 180, 255)
+        labelText.Font = Enum.Font.Gotham
+        labelText.TextSize = 14
+        labelText.TextXAlignment = Enum.TextXAlignment.Left
+        labelText.Parent = container
+
+        local btnFrame = Instance.new("Frame")
+        btnFrame.Size = UDim2.new(1, 0, 0, 30)
+        btnFrame.Position = UDim2.new(0, 0, 0, 25)
+        btnFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        btnFrame.Parent = container
+
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0, 4)
+        btnCorner.Parent = btnFrame
+
+        local btnStroke = Instance.new("UIStroke")
+        btnStroke.Color = Color3.fromRGB(100, 0, 255)
+        btnStroke.Thickness = 1
+        btnStroke.Parent = btnFrame
+
+        local input = Instance.new("TextButton")
+        input.Size = UDim2.new(1, 0, 1, 0)
+        input.Position = UDim2.new(0, 0, 0, 0)
+        input.Text = current == "" and "Click to set" or current
+        input.BackgroundTransparency = 1
+        input.TextColor3 = Color3.fromRGB(220, 180, 255)
+        input.Font = Enum.Font.Gotham
+        input.TextSize = 16
+        input.Parent = btnFrame
+
+        local textStroke = Instance.new("UIStroke")
+        textStroke.Color = Color3.fromRGB(80, 0, 160)
+        textStroke.Thickness = 1
+        textStroke.Parent = input
+
+        local listening = false
+        input.MouseButton1Click:Connect(function()
+            if not listening then
+                listening = true
+                input.Text = "Press a key..."
+                input.BackgroundColor3 = Color3.fromRGB(80, 80, 120)
+                
+                local connection
+                connection = UserInputService.InputBegan:Connect(function(key)
+
+				   
+
+                    local keyName = ""
+                    
+                    if key.UserInputType == Enum.UserInputType.MouseButton1 then
+                        keyName = "MouseButton1"
+                    elseif key.UserInputType == Enum.UserInputType.MouseButton2 then
+                        keyName = "MouseButton2"
+                    elseif key.KeyCode == Enum.KeyCode.LeftShift then
+                        keyName = "LeftShift"
+                    elseif key.KeyCode == Enum.KeyCode.RightShift then
+                        keyName = "RightShift"
+                    else
+                        keyName = tostring(key.KeyCode.Name)
+                    end
+                    
+                    callback(keyName)
+                    input.Text = keyName
+                    input.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+                    listening = false
+                    connection:Disconnect()
+                    SaveSettings()
+        end)
+            end
+        end)
+
+        return container
+    end
+       
+
+    local controls = {}
+
+
+    
+    controls[#controls + 1] = CreateNumberInput("FOV", settings.FOV, 360, function(value)
+        settings.FOV = value
+    end)
+
+    controls[#controls + 1] = CreateNumberInput("Smoothness", settings.Smoothness, 1, function(value)
+        settings.Smoothness = value
+    end)
+
+    controls[#controls + 1] = CreateNumberInput("Prediction Power", settings.Prediction or 0.15, 2.0, function(value)
+        settings.Prediction = value
+        SaveSettings()
+        
+        if autoPredictionEnabled then
+            print("Prediction Power definido como " .. value .. " (não afeta - Auto Prediction está ON)")
+        else
+            if value == 0 then
+                print("Prediction: OFF - Sem predição")
+            else
+                print("Prediction: " .. value .. " - Predição manual BRUTAL")
+            end
+        end
+    end)
+
+    controls[#controls + 1] = CreateNumberInput("Max Distance", settings.MaxDistance, 5000, function(value)
+        settings.MaxDistance = value
+    end)
+
+       -- TOGGLE AUTO-PREDICTION
+    controls[#controls + 1] = CreateToggle("Auto Prediction", settings.AutoPrediction, function(value)
+        settings.AutoPrediction = value
+        autoPredictionEnabled = value
+        SaveSettings()
+        
+        if value then
+            print("Auto Prediction: ON - Ignorando Prediction Power, usando ajuste automático")
+        else
+            local predictionValue = settings.Prediction or 0.15
+            if predictionValue == 0 then
+                print("Auto Prediction: OFF - Predição DESLIGADA (Prediction Power = 0)")
+            else
+                print("Auto Prediction: OFF - Predição manual: " .. predictionValue)
+            end
+        end
+    end)
+
+
+    controls[#controls + 1] = CreateToggle("Hold Mode", settings.HoldMode, function(value)
+        settings.HoldMode = value
+    end)
+
+    controls[#controls + 1] = CreateToggle("Wall Check", settings.WallCheck, function(value)
+        settings.WallCheck = value
+    end)
+
+    controls[#controls + 1] = CreateToggle("Squad Check", settings.TeamCheck, function(value)
+        settings.TeamCheck = value
+    end)
+
+    controls[#controls + 1] = CreateDropdown("Priority", {"Closest", "Crosshair", "LowestHealth"}, settings.Priority, function(value)
+        settings.Priority = value
+    end)
+
+    controls[#controls + 1] = CreateKeyInput("Aimbot Key", settings.ToggleKey, function(value)
+        settings.ToggleKey = value
+    end)
+
+    controls[#controls + 1] = CreateKeyInput("Hub Key", settings.GUIOpenKey, function(value)
+        settings.GUIOpenKey = value
+    end)
+
+ controls[#controls + 1] = CreateKeyInput("Infinite Jump Key", settings.InfiniteJumpKey, function(value)
+        settings.InfiniteJumpKey = value
+    end)
+
+	controls[#controls + 1] = CreateKeyInput("Rejoin Key", settings.RejoinKey, function(value)
+        settings.RejoinKey = value
+    end)
+
+
+    controls[#controls + 1] = CreateKeyInput("Ping Toggle Key", settings.PingToggleKey, function(value)
+        settings.PingToggleKey = value
+    end)
+
+
+    local optimizationContainer = Instance.new("Frame")
+    optimizationContainer.Size = UDim2.new(1, -10, 0, 40)
+    optimizationContainer.BackgroundTransparency = 1
+    optimizationContainer.Parent = scrollFrame
+
+    local optimizationLabel = Instance.new("TextLabel")
+    optimizationLabel.Size = UDim2.new(0.7, 0, 1, 0)
+    optimizationLabel.Position = UDim2.new(0, 0, 0, 0)
+    optimizationLabel.BackgroundTransparency = 1
+    optimizationLabel.Text = "Enhance Performance"
+    optimizationLabel.TextColor3 = Color3.fromRGB(220, 180, 255)
+    optimizationLabel.Font = Enum.Font.Gotham
+    optimizationLabel.TextSize = 14
+    optimizationLabel.TextXAlignment = Enum.TextXAlignment.Left
+    optimizationLabel.Parent = optimizationContainer
+
+    local enhanceFrame = Instance.new("Frame")
+    enhanceFrame.Size = UDim2.new(0, 120, 0, 30)
+    enhanceFrame.Position = UDim2.new(1, -120, 0.5, -15)
+    enhanceFrame.BackgroundColor3 = Color3.fromRGB(128, 0, 128)
+    enhanceFrame.Parent = optimizationContainer
+
+    local enhanceFrameCorner = Instance.new("UICorner")
+    enhanceFrameCorner.CornerRadius = UDim.new(0, 6)
+    enhanceFrameCorner.Parent = enhanceFrame
+
+    local enhanceFrameStroke = Instance.new("UIStroke")
+    enhanceFrameStroke.Color = Color3.fromRGB(100, 0, 255)
+    enhanceFrameStroke.Thickness = 1
+    enhanceFrameStroke.Parent = enhanceFrame
+
+    local optimizationBtn = Instance.new("TextButton")
+    optimizationBtn.Size = UDim2.new(1, 0, 1, 0)
+    optimizationBtn.Position = UDim2.new(0, 0, 0, 0)
+    optimizationBtn.Text = "Enhance"
+    optimizationBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    optimizationBtn.TextColor3 = Color3.fromRGB(220, 180, 255)
+    optimizationBtn.Font = Enum.Font.GothamBold
+    optimizationBtn.TextSize = 12
+    optimizationBtn.Parent = enhanceFrame
+
+    local optimizationCorner = Instance.new("UICorner")
+    optimizationCorner.CornerRadius = UDim.new(0, 6)
+    optimizationCorner.Parent = optimizationBtn
+
+    local optimizationStroke = Instance.new("UIStroke")
+    optimizationStroke.Color = Color3.fromRGB(80, 0, 160)
+    optimizationStroke.Thickness = 1
+    optimizationStroke.Parent = optimizationBtn
+
+    optimizationBtn.MouseButton1Click:Connect(function()
+        startOptimization()
+        setupOptimizationMonitor()
+        optimizationBtn.Text = "Enhanced!"
+        optimizationStroke.Thickness = 4
+        optimizationStroke.Transparency = 0.1
+    end)
+
+    local particlesContainer = Instance.new("Frame")
+    particlesContainer.Size = UDim2.new(1, -10, 0, 40)
+    particlesContainer.BackgroundTransparency = 1
+    particlesContainer.Parent = scrollFrame
+
+    local particlesLabel = Instance.new("TextLabel")
+    particlesLabel.Size = UDim2.new(0.7, 0, 1, 0)
+    particlesLabel.Position = UDim2.new(0, 0, 0, 0)
+    particlesLabel.BackgroundTransparency = 1
+    particlesLabel.Text = "Remove Effects"
+    particlesLabel.TextColor3 = Color3.fromRGB(220, 180, 255)
+    particlesLabel.Font = Enum.Font.Gotham
+    particlesLabel.TextSize = 14
+    particlesLabel.TextXAlignment = Enum.TextXAlignment.Left
+    particlesLabel.Parent = particlesContainer
+
+    local removeFrame = Instance.new("Frame")
+    removeFrame.Size = UDim2.new(0, 120, 0, 30)
+    removeFrame.Position = UDim2.new(1, -120, 0.5, -15)
+    removeFrame.BackgroundColor3 = Color3.fromRGB(128, 0, 128)
+    removeFrame.Parent = particlesContainer
+
+    local removeFrameCorner = Instance.new("UICorner")
+    removeFrameCorner.CornerRadius = UDim.new(0, 6)
+    removeFrameCorner.Parent = removeFrame
+
+    local removeFrameStroke = Instance.new("UIStroke")
+    removeFrameStroke.Color = Color3.fromRGB(100, 0, 255)
+    removeFrameStroke.Thickness = 1
+    removeFrameStroke.Parent = removeFrame
+
+    local particlesBtn = Instance.new("TextButton")
+    particlesBtn.Size = UDim2.new(1, 0, 1, 0)
+    particlesBtn.Position = UDim2.new(0, 0, 0, 0)
+    particlesBtn.Text = "Remove"
+    particlesBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    particlesBtn.TextColor3 = Color3.fromRGB(220, 180, 255)
+    particlesBtn.Font = Enum.Font.GothamBold
+    particlesBtn.TextSize = 12
+    particlesBtn.Parent = removeFrame
+
+    local particlesCorner = Instance.new("UICorner")
+    particlesCorner.CornerRadius = UDim.new(0, 6)
+    particlesCorner.Parent = particlesBtn
+
+    local particlesStroke = Instance.new("UIStroke")
+    particlesStroke.Color = Color3.fromRGB(80, 0, 160)
+    particlesStroke.Thickness = 1
+    particlesStroke.Parent = particlesBtn
+
+    particlesBtn.MouseButton1Click:Connect(function()
+        startRemoveParticles()
+        particlesBtn.Text = "Removed!"
+        particlesStroke.Thickness = 4
+        particlesStroke.Transparency = 0.1
+    end)
+
+
+    local buttonContainer = Instance.new("Frame")
+    buttonContainer.Size = UDim2.new(1, -16, 0, 40)
+    buttonContainer.Position = UDim2.new(0, 8, 1, -50)
+    buttonContainer.BackgroundTransparency = 1
+    buttonContainer.Parent = mainFrame
+
+    local doneFrame = Instance.new("Frame")
+    doneFrame.Size = UDim2.new(1, 0, 1, 0)
+    doneFrame.BackgroundColor3 = Color3.fromRGB(128, 0, 128)
+    doneFrame.Parent = buttonContainer
+
+    local doneFrameCorner = Instance.new("UICorner")
+    doneFrameCorner.CornerRadius = UDim.new(0, 6)
+    doneFrameCorner.Parent = doneFrame
+
+    local doneFrameStroke = Instance.new("UIStroke")
+    doneFrameStroke.Color = Color3.fromRGB(100, 0, 255)
+    doneFrameStroke.Thickness = 1
+    doneFrameStroke.Parent = doneFrame
+
+    local doneBtn = Instance.new("TextButton")
+    doneBtn.Size = UDim2.new(1, 0, 1, 0)
+    doneBtn.Text = "SAVE"
+    doneBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    doneBtn.TextColor3 = Color3.fromRGB(220, 180, 255)
+    doneBtn.Font = Enum.Font.GothamBold
+    doneBtn.TextSize = 14
+    doneBtn.Parent = doneFrame
+
+    local doneCorner = Instance.new("UICorner")
+    doneCorner.CornerRadius = UDim.new(0, 6)
+    doneCorner.Parent = doneBtn
+
+    local doneBtnStroke = Instance.new("UIStroke")
+    doneBtnStroke.Color = Color3.fromRGB(80, 0, 160)
+    doneBtnStroke.Thickness = 1
+    doneBtnStroke.Parent = doneBtn
+
+    local textStroke = Instance.new("UIStroke")
+    textStroke.Color = Color3.fromRGB(80, 0, 160)
+    textStroke.Thickness = 1.5
+    textStroke.Parent = doneBtn
+
+    local textGlow = Instance.new("UIStroke")
+    textGlow.Color = Color3.fromRGB(150, 50, 255)
+    textGlow.Thickness = 3
+    textGlow.Transparency = 0.7
+    textGlow.Parent = doneBtn
+
+    doneBtn.MouseButton1Click:Connect(function()
+        SaveSettings()
+        screenGui.Enabled = false
+    end)
+
+    task.defer(function()
+        scrollFrame.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 20)
+    end)
+
+    return screenGui
+end
+
+local function ShowWelcomeMessage()
+    local welcomeGui = Instance.new("ScreenGui")
+    welcomeGui.Name = "WelcomeMessage"
+    welcomeGui.ResetOnSpawn = false
+    welcomeGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 300, 0, 80)
+    mainFrame.Position = UDim2.new(0.5, -150, 0.1, 0)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 15)
+    mainFrame.BackgroundTransparency = 0.2
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Parent = welcomeGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = mainFrame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(100, 0, 255)
+    stroke.Thickness = 1
+    stroke.Parent = mainFrame
+
+    local glow = Instance.new("UIStroke")
+    glow.Color = Color3.fromRGB(150, 50, 255)
+    glow.Thickness = 4
+    glow.Transparency = 0.7
+    glow.Parent = mainFrame
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -20, 1, -20)
+    title.Position = UDim2.new(0, 10, 0, 10)
+    title.BackgroundTransparency = 1
+    title.Text = "Made by Clara"
+    title.TextColor3 = Color3.fromRGB(220, 180, 255)
+    title.Font = Enum.Font.GothamBlack
+    title.TextSize = 20
+    title.TextStrokeTransparency = 0
+    title.TextStrokeColor3 = Color3.fromRGB(80, 0, 160)
+    title.Parent = mainFrame
+
+    task.delay(3, function()
+        for i = 1, 10 do
+            mainFrame.BackgroundTransparency = mainFrame.BackgroundTransparency + 0.1
+            title.TextTransparency = title.TextTransparency + 0.1
+            title.TextStrokeTransparency = title.TextStrokeTransparency + 0.1
+            task.wait(0.1)
+        end
+        welcomeGui:Destroy()
+    end)
+end
+
+
+local function onPlayerAdded(player)
+    ensureOverlayEntry(player)
+    player.CharacterAdded:Connect(function(c) onCharacterAdded(c, player) end)
+    if player.Character then
+        onCharacterAdded(player.Character, player)
+    end
+end
+
+
+LoadSettings()
+mainGUI = CreateHubGUI()
+mainGUI.Enabled = true
+ShowWelcomeMessage()
+CreatePingDisplay()
+setupSquadMonitoring()
+
+
+for _,p in ipairs(Players:GetPlayers()) do
+    onPlayerAdded(p)
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+Players.PlayerRemoving:Connect(function(player)
+    removeOverlayEntry(player)
+    if player.Character then
+        untrackCharacter(player.Character)
+    end
+end)
+
+Players.PlayerAdded:Connect(function(pl)
+    pl.CharacterAdded:Connect(function(c)
+        task.defer(function()
+            trackCharacter(c, pl)
+        end)
+    end)
+    pl.CharacterRemoving:Connect(function(c)
+        untrackCharacter(c)
+    end)
+end)
+
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+
+  -- F2 para forçar refresh de todos os overlays
+    if input.KeyCode == Enum.KeyCode.F2 then
+        refreshAllOverlays()
+    end
+
+    
+    if MatchesInputToKey(input, settings.GUIOpenKey) then
+        ToggleGUI()
+    end
+    
+    if MatchesInputToKey(input, settings.ToggleKey) then
+        if settings.HoldMode then
+            ToggleAimbot(true)
+        else
+            ToggleAimbot(not aimbotEnabled)
+        end
+    end
+    
+    if MatchesInputToKey(input, settings.PingToggleKey) then
+        TogglePingDisplay()
+    end
+    
+    if MatchesInputToKey(input, settings.InfiniteJumpKey) then
+        toggleInfiniteJump()
+    end
+
+	 if MatchesInputToKey(input, settings.RejoinKey) then
+        print("Rejoin executado pela tecla F10")
+        executeRejoin()
+    end
+    
+    if input.KeyCode == TOGGLE_KEY_ESP then
+        if debounce then return end
+        debounce = true
+        toggleEspVisibility()
+        task.delay(DEBOUNCE_KEY, function() debounce = false end)
+        
+    elseif input.KeyCode == TOGGLE_KEY_OVERLAY then
+        if debounce then return end
+        debounce = true
+        toggleOverlayVisibility()
+        task.delay(DEBOUNCE_KEY, function() debounce = false end)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gp)
+    if gp then return end
+    
+    if settings.HoldMode and MatchesInputToKey(input, settings.ToggleKey) then
+        ToggleAimbot(false)
+    end
+end)
+
+
+local lastUpdate = 0
+local updateInterval = 0.2
+local lastCleanup = 0
+local cleanupInterval = 5
+
+local heartbeatConnection = RunService.Heartbeat:Connect(function()
+    local now = tick()
+    
+    -- Fazer cleanup periódico
+    if (now - lastCleanup) > cleanupInterval then
+        cleanupInvalidOverlays()
+        lastCleanup = now
+    end
+    
+    if (now - lastUpdate) < updateInterval then return end
+    lastUpdate = now
+    
+    -- Atualizar overlays de forma segura
+    for player, _ in pairs(overlayList) do
+        if player and player.Parent then
+            updateOverlayForPlayer(player)
+        else
+            removeOverlayEntry(player)
+        end
+    end
+end)
+
+
+-- INICIALIZAÇÃO MELHORADA
+task.spawn(function()
+    task.wait(2) -- Esperar um pouco mais na inicialização
+    
+    -- Inicializar overlay para todos os jogadores existentes
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            ensureOverlayEntry(player)
+            task.wait(0.1) -- Pequeno delay entre cada jogador
+        end
+    end
+    
+    print("=== OVERLAY INICIALIZADO COM SUCESSO ===")
+    print("F2: Forçar atualização de todos os overlays")
+end)
+
+task.spawn(function()
+    task.wait(1) 
+    initializeOverlay()
+    print("Overlay inicializado!")
+    print("=== SISTEMA CARREGADO COM SUCESSO ===")
+    print("U: Alternar ESP")
+    print("RightShift: Alternar Overlay") 
+    print("F1: Toggle Ping Display")
+    print("F2: Debug/Refresh Overlay")
+    print("F10: Rejoin Game")
+    print("J: Infinite Jump")
+    print(settings.GUIOpenKey .. ": Abrir/Fechar Menu")
+    print(settings.ToggleKey .. ": Aimbot")
+
+end)
