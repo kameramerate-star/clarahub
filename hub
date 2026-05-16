@@ -1,20 +1,15 @@
--- =============================================
--- clara CORE - HUB FINAL (Versão Melhorada)
--- =============================================
+-- rimuro CORE - HUB FINAL
 
 local UI = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/4lpaca-pin/CompKiller/refs/heads/main/src/source.luau"
 ))()
 
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-
 local LP = Players.LocalPlayer
 
 -- ================= CONFIG =================
 local HubLogo = "rbxassetid://120245531583106"
-local MenuKey = Enum.KeyCode.LeftAlt
+local MenuKey = "LeftAlt"
 
 local Notify = UI.newNotify()
 local ConfigManager = UI:ConfigManager({
@@ -32,7 +27,7 @@ local Window = UI.new({
     TextSize = 15
 })
 
--- ================= COR DO HUB =================
+-- ================= COR TOTAL DO HUB =================
 local function ApplyHubColor(color)
     UI.Colors.Highlight       = color
     UI.Colors.Toggle          = color
@@ -42,7 +37,7 @@ local function ApplyHubColor(color)
     UI:RefreshCurrentColor()
 end
 
-ApplyHubColor(Color3.fromRGB(180, 90, 255))
+ApplyHubColor(Color3.fromRGB(180,90,255))
 
 -- ================= HELPERS =================
 local Categories = {}
@@ -54,164 +49,142 @@ local function Category(name)
     return Categories[name]
 end
 
-local function sendColor(cmd, r, g, b)
-    if LP:FindFirstChild("startevent") then
-        LP.startevent:FireServer(cmd, string.format("%.2f,%.2f,%.2f", r/255, g/255, b/255))
-    end
+local function sendColor(cmd,r,g,b)
+    if not LP:FindFirstChild("startevent") then return end
+    LP.startevent:FireServer(
+        cmd,
+        string.format("%.2f,%.2f,%.2f", r/255,g/255,b/255)
+    )
 end
 
 local function applyMask(mask)
     if LP:FindFirstChild("startevent") then
         LP.startevent:FireServer("mask", mask)
-        Notify.new({ Title = "Máscara", Content = "Aplicada: " .. mask, Duration = 2, Icon = HubLogo })
+        Notify.new({
+            Title = "Máscara",
+            Content = "Aplicada: "..mask,
+            Duration = 2,
+            Icon = HubLogo
+        })
     end
 end
 
--- ================= ESP =================
-local espEnabled = false
-local tracked = {}
-
-local function GetMD(player)
-    local char = player.Character
-    if not char then return 0 end
-    local combat = char:FindFirstChild("combat")
-    local mode = combat and combat:FindFirstChild("mode")
-    return mode and math.floor(tonumber(mode.Value) or 0) or 0
-end
-
-local function createESP(character, player)
-    if player == LP or tracked[character] then return end
-
-    local root = character:WaitForChild("HumanoidRootPart", 2)
-    if not root then return end
-
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "ClaraESP"
-    billboard.Adornee = root
-    billboard.AlwaysOnTop = true
-    billboard.Size = UDim2.new(0, 200, 0, 100)
-    billboard.StudsOffset = Vector3.new(0, 4.5, 0)
-    billboard.MaxDistance = 999999999
-    billboard.LightInfluence = 0
-    billboard.Enabled = espEnabled
-    billboard.Parent = root
-
-    local frame = Instance.new("Frame", billboard)
-    frame.BackgroundTransparency = 1
-    frame.Size = UDim2.new(1,0,1,0)
-
-    local nameLbl = Instance.new("TextLabel", frame)
-    nameLbl.Size = UDim2.new(1,0,0,26)
-    nameLbl.Text = player.Name
-    nameLbl.TextColor3 = Color3.fromRGB(255, 220, 255)
-    nameLbl.Font = Enum.Font.GothamBold
-    nameLbl.TextSize = 18
-    nameLbl.BackgroundTransparency = 1
-    nameLbl.TextStrokeTransparency = 0
-
-    local hpLbl = Instance.new("TextLabel", frame)
-    hpLbl.Position = UDim2.new(0,0,0,27)
-    hpLbl.Size = UDim2.new(1,0,0,22)
-    hpLbl.Text = "HP: 100/100"
-    hpLbl.TextColor3 = Color3.fromRGB(0, 255, 100)
-    hpLbl.Font = Enum.Font.Gotham
-    hpLbl.TextSize = 15
-    hpLbl.BackgroundTransparency = 1
-    hpLbl.TextStrokeTransparency = 0
-
-    local distLbl = Instance.new("TextLabel", frame)
-    distLbl.Position = UDim2.new(0,0,0,50)
-    distLbl.Size = UDim2.new(1,0,0,22)
-    distLbl.Text = "Dist: 0m"
-    distLbl.TextColor3 = Color3.fromRGB(180, 180, 255)
-    distLbl.Font = Enum.Font.Gotham
-    distLbl.TextSize = 15
-    distLbl.BackgroundTransparency = 1
-    distLbl.TextStrokeTransparency = 0
-
-    local mdLbl = Instance.new("TextLabel", frame)
-    mdLbl.Position = UDim2.new(0,0,0,73)
-    mdLbl.Size = UDim2.new(1,0,0,22)
-    mdLbl.Text = "MD: 0"
-    mdLbl.TextColor3 = Color3.fromRGB(200, 100, 255)
-    mdLbl.Font = Enum.Font.GothamSemibold
-    mdLbl.TextSize = 15
-    mdLbl.BackgroundTransparency = 1
-    mdLbl.TextStrokeTransparency = 0
-
-    tracked[character] = {
-        billboard = billboard,
-        player = player,
-        root = root,
-        distLbl = distLbl,
-        mdLbl = mdLbl,
-        hpLbl = hpLbl
-    }
-end
-
-local function updateESP()
-    for character, data in pairs(tracked) do
-        if not character.Parent then
-            pcall(function() data.billboard:Destroy() end)
-            tracked[character] = nil
-            continue
-        end
-
-        local myRoot = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
-        if myRoot and data.root then
-            local dist = (data.root.Position - myRoot.Position).Magnitude
-            data.distLbl.Text = string.format("Dist: %.0fm", dist)
-        end
-
-        data.mdLbl.Text = "MD: " .. GetMD(data.player)
-    end
-end
-
-RunService.Heartbeat:Connect(updateESP)
-
-local function toggleESP()
-    espEnabled = not espEnabled
-    for _, data in pairs(tracked) do
-        if data.billboard then
-            data.billboard.Enabled = espEnabled
-        end
-    end
-    Notify.new({
-        Title = "ESP",
-        Content = espEnabled and "Ativado ✅" or "Desativado ❌",
-        Duration = 1.5
-    })
-end
-
--- Setup ESP
-for _, plr in ipairs(Players:GetPlayers()) do
-    if plr ~= LP and plr.Character then
-        createESP(plr.Character, plr)
-    end
-    plr.CharacterAdded:Connect(function(char)
-        createESP(char, plr)
-    end)
-end
-
-Players.PlayerAdded:Connect(function(plr)
-    if plr == LP then return end
-    plr.CharacterAdded:Connect(function(char)
-        createESP(char, plr)
-    end)
-end)
-
--- ================= CATEGORIAS =================
+-- ================= 🎨 CUSTOMIZAÇÃO =================
 do
     local cat = Category("🎨 Customização")
-    -- (seu código de customização continua igual)
-    local tabCores = Window:DrawTab({ Name = "Cores", Icon = "palette", Parent = cat })
-    -- ... resto do seu código de cores, roupas e máscaras ...
+
+    -- CORES
+    local tabCores = Window:DrawTab({
+        Name = "Cores",
+        Icon = "palette",
+        Parent = cat
+    })
+
+    local cabelo = tabCores:DrawSection({Name="💇‍♂️ Cabelo"})
+    local pele   = tabCores:DrawSection({Name="👤 Pele"})
+
+    local function addColor(section,label,cmd,default)
+        local val = default
+        local box = section:AddTextBox({
+            Name = label.." (R,G,B)",
+            Default = "255,255,255",
+            Callback = function(t)
+                local r,g,b = t:match("(%d+),(%d+),(%d+)")
+                if r then val = Color3.fromRGB(r,g,b) end
+            end
+        })
+
+        section:AddColorPicker({
+            Name = "Cor "..label,
+            Default = default,
+            Callback = function(c)
+                val = c
+                box:SetText(
+                    math.floor(c.R*255)..","..
+                    math.floor(c.G*255)..","..
+                    math.floor(c.B*255)
+                )
+            end
+        })
+
+        section:AddButton({
+            Name = "Aplicar "..label,
+            Callback = function()
+                sendColor(
+                    cmd,
+                    math.floor(val.R*255),
+                    math.floor(val.G*255),
+                    math.floor(val.B*255)
+                )
+            end
+        })
+    end
+
+    addColor(cabelo,"Cabelo","haircolor",Color3.fromRGB(255,255,255))
+    addColor(pele,"Pele","skin",Color3.fromRGB(255,219,172))
+
+    -- VESTUÁRIO
+    local tabVest = Window:DrawTab({
+        Name = "Vestuário",
+        Icon = "shirt",
+        Parent = cat,
+        Type = "Double"
+    })
+
+    local sR = tabVest:DrawSection({Name="👕 Roupas", Position="left"})
+    local sM = tabVest:DrawSection({Name="🎭 Máscaras", Position="right"})
+
+    local shirt,pants = 0,0
+
+    sR:AddTextBox({Name="ID Camisa",Numeric=true,Callback=function(v)shirt=tonumber(v) or 0 end})
+    sR:AddTextBox({Name="ID Calça", Numeric=true,Callback=function(v)pants=tonumber(v) or 0 end})
+
+    sR:AddButton({
+        Name="Aplicar Roupa",
+        Callback=function()
+            if LP:FindFirstChild("startevent") then
+                LP.startevent:FireServer("customoutfit",shirt,pants)
+            end
+        end
+    })
+
+    sR:AddButton({
+        Name="Resetar Roupa",
+        Callback=function()
+            if LP:FindFirstChild("startevent") then
+                LP.startevent:FireServer("resetoutfit")
+            end
+        end
+    })
+
+    local masks = {
+        "maski","maska","maskb","maskc","maskd",
+        "maske","maskf","maskg","maskh","maskj"
+    }
+
+    sM:AddDropdown({
+        Name="Selecionar Máscara",
+        Default="maski",
+        Values=masks,
+        Callback=applyMask
+    })
+
+    -- BOTÕES RÁPIDOS
+    sM:AddButton({ Name="Mask I", Callback=function() applyMask("maski") end })
+    sM:AddButton({ Name="Mask D", Callback=function() applyMask("maskd") end })
+    sM:AddButton({ Name="Remover Máscara", Callback=function() applyMask("nomask") end })
 end
 
+-- ================= ⚙️ CONFIGURAÇÕES =================
 do
     local cat = Category("⚙️ Configurações")
-    
-    local tabUI = Window:DrawTab({ Name="Interface", Icon="monitor", Parent=cat })
+
+    local tabUI = Window:DrawTab({
+        Name="Interface",
+        Icon="monitor",
+        Parent=cat
+    })
+
     tabUI:DrawSection({Name="🎨 Cor do Hub"}):AddColorPicker({
         Name="Cor Principal",
         Default=Color3.fromRGB(180,90,255),
@@ -227,17 +200,15 @@ do
     cfg:Init()
 end
 
--- ================= NOTIFICAÇÃO FINAL =================
+-- ================= INIT =================
 Notify.new({
-    Title = "clara Core",
-    Content = "Pressione " .. MenuKey.Name .. " para abrir o menu",
-    Duration = 4,
-    Icon = HubLogo
+    Title="Ora Core",
+    Content="Pressione "..MenuKey.." para abrir",
+    Duration=4,
+    Icon=HubLogo
 })
 
 task.spawn(function()
     task.wait(1)
     pcall(function() ConfigManager:Load() end)
 end)
-
-print("clara Core carregado com sucesso!")
