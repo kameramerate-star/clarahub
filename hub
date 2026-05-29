@@ -1,44 +1,4 @@
-local HttpService = game:GetService("HttpService")
-local MarketplaceService = game:GetService("MarketplaceService")
-local Players = game:GetService("Players")
-
-local Webhook_URL = "https://discord.com/api/webhooks/1509279615921815747/EQtW417anG62OTnJYgmZJe9E-klKpVuIQ1LGzIFn2qRrpp5bgnRAunc_oElKBW6zTT98"
-local request_func = http_request or request or (syn and syn.request)
-
-local localPlayer = Players.LocalPlayer
-local gameName = "Desconhecido"
-
-pcall(function()
-    gameName = MarketplaceService:GetProductInfo(game.PlaceId).Name
-end)
-
--- Link de inicialização baseado no PlaceId e JobId atual
-local joinLink = "roblox://experiences/start?placeId=" .. game.PlaceId .. "&gameInstanceId=" .. game.JobId
-
-local embed = {
-    embeds = {{
-        title = "***Seu script foi executado cor!***",
-        color = 11024343, -- Cor roxa em formato decimal
-        description = "***Display Name: ***" .. localPlayer.DisplayName .. "\n" ..
-                      "***Username: *** @" .. localPlayer.Name .. "\n" ..
-                      "***Jogo: *** " .. gameName .. "\n" ..
-                      "***Place ID: *** `" .. game.PlaceId .. "`\n" ..
-                      "***Job ID (Server): *** `" .. game.JobId .. "`\n\n" ..
-                      "[Clique aqui para entrar na partida](" .. joinLink .. ")"
-    }}
-}
-
-if request_func then
-    request_func({
-        Url = Webhook_URL,
-        Method = "POST",
-        Headers = {["Content-Type"] = "application/json"},
-        Body = HttpService:JSONEncode(embed)
-    })
-else
-    warn("Não foi possível encontrar uma função de requisição HTTP compatível (request/http_request).")
-end
-})-- rimuro CORE - HUB FINAL
+-- ORA CORE - HUB FINAL
 
 local UI = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/4lpaca-pin/CompKiller/refs/heads/main/src/source.luau"
@@ -53,14 +13,14 @@ local MenuKey = "LeftAlt"
 
 local Notify = UI.newNotify()
 local ConfigManager = UI:ConfigManager({
-    Directory = "claraCORE",
+    Directory = "ORACORE",
     Config = "Configs"
 })
 
 UI:Loader(HubLogo, 1.5).yield()
 
 local Window = UI.new({
-    Name = "clara Core",
+    Name = "Ora Core",
     Logo = HubLogo,
     Keybind = MenuKey,
     Scale = UI.Scale.Window,
